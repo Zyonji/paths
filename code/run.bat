@@ -1,4 +1,4 @@
 @echo off
 
-cd ..\data\
-start "" ..\build\win32_paths.exe
+cd %~dp0\..\data\
+start "" %~dp0\..\build\win32_paths.exe

@@ -1,4 +1,4 @@
 @echo off
-call ".\build.bat"
+call "%~dp0\build.bat"
 
-devenv ..\build\win32_paths.exe
+devenv %~dp0\..\build\win32_paths.exe

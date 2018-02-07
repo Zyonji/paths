@@ -13,7 +13,7 @@ set OptimizedFlags=/O2
 set CompilerFlags=%BuildFlags% %DebugFlags% %WarningFlags% %OptionFlags%
 REM set CompilerFlags=%BuildFlags% %OptimizedFlags% %WarningFlags% %OptionFlags%
 
-IF NOT EXIST ..\build mkdir ..\build
-pushd ..\build
-cl %CompilerFlags% ..\code\win32_paths.cpp %LinkerFlags%
+IF NOT EXIST %~dp0\..\build mkdir %~dp0\..\build
+pushd %~dp0\..\build
+cl %CompilerFlags% %~dp0\win32_paths.cpp %LinkerFlags%
 popd
