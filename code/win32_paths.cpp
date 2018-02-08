@@ -36,6 +36,8 @@ struct win32_offscreen_buffer
 struct game_tile
 {
     b32 IsFree;
+    i32 X;
+    i32 Y;
     i32 PreviousX;
     i32 PreviousY;
     i32 NextX;
@@ -52,7 +54,7 @@ struct game_room
 struct game_state
 {
     b32 Running;
-    i32 Seed;
+    u32 Seed;
     i32 RoomsCleared;
     i32 X;
     i32 Y;
@@ -62,11 +64,36 @@ struct game_state
 
 global_variable game_state *GlobalGameState;
 
+internal u32
+AdvanceRandomNumber(u32 Number)
+{
+    u32 Result = Number;
+    u32 Subtraction = (Number & 7187) * 941083981;
+    u32 Addition = (Number & 141650963) * 433024223;
+    Result += 23 + Addition - Subtraction;
+    return(Result);
+}
+
 internal game_tile*
 GetTile(game_state *GameState, int X, int Y)
 {
     game_tile *Tile = (GameState->Room.Tiles + X + Y * GameState->Room.Width);
     return(Tile);
+}
+
+internal b32
+IsTileFree(game_state *GameState, int X, int Y)
+{
+    b32 Result = false;
+    int Height = GameState->Room.Height;
+    int Width = GameState->Room.Width;
+    
+    if(X >= 0 && Y >= 0 && X < Width && Y < Height)
+    {
+        game_tile *Tile = GetTile(GameState, X, Y);
+        Result = Tile->IsFree;
+    }
+    return(Result);
 }
 
 internal void
@@ -151,13 +178,31 @@ ResetRoom(game_state *GameState)
             X < Width;
             ++X)
         {
+            Tile->X = X;
+            Tile->Y = Y;
             if(X == GameState->X && Y != GameState->Y)
             {
                 Tile->IsFree = true;
-                Tile->PreviousX = X;
-                Tile->PreviousY = Y - 1;
-                Tile->NextX = X;
-                Tile->NextY = Y + 1;
+                if(Y > 1)
+                {
+                    Tile->PreviousX = X;
+                    Tile->PreviousY = Y - 1;
+                }
+                else
+                {
+                    Tile->PreviousX = 0;
+                    Tile->PreviousY = 0;
+                }
+                if(Y < Height - 2)
+                {
+                    Tile->NextX = X;
+                    Tile->NextY = Y + 1;
+                }
+                else
+                {
+                    Tile->NextX = 0;
+                    Tile->NextY = 0;
+                }
             }
             else
             {
@@ -167,6 +212,185 @@ ResetRoom(game_state *GameState)
         }
         
         TileRow += Width;
+    }
+    
+    u32 Random = AdvanceRandomNumber(GameState->Seed);
+    int RemainingTiles = (Height - 2) * (Width - 1);
+    int MinimumHoles = RemainingTiles / 8;
+    game_tile *FirstTile = Room->Tiles + Width - 1;
+    for(int I = 0;
+        I < 10 && RemainingTiles > MinimumHoles;
+        ++I)
+    {
+        int TileNumber = Random % RemainingTiles;
+        game_tile *Tile = FirstTile;
+        for(int J = 0;
+            J <= TileNumber;
+            J)
+        {
+            ++Tile;
+            if(!Tile->IsFree)
+            {
+                ++J;
+            }
+        }
+        Random = AdvanceRandomNumber(Random);
+        b32 MovedPath = false;
+        int Stretch = (Random & 0x7) + 2;
+        int Orientation = (Random & 0x30) / 0x10;
+        int X = Tile->X;
+        int Y = Tile->Y;
+        for(int J = 0;
+            J < 4 && !MovedPath;
+            ++J)
+        {
+            // NOTE(Zyonji): extending forward, pulling left
+            int dX = 0;
+            int dY = 0;
+            if(Orientation & 0x1)
+            {
+                if(Orientation & 0x2)
+                {
+                    dX = 1;
+                }
+                else
+                {
+                    dX = -1;
+                }
+            }
+            else
+            {
+                if(Orientation & 0x2)
+                {
+                    dY = 1;
+                }
+                else
+                {
+                    dY = -1;
+                }
+            }
+            
+            int TestX = X + dX;
+            int TestY = Y + dY;
+            game_tile *TestTile = GetTile(GameState, TestX, TestY);
+            while(TestX >= 0 && TestY > 0 && TestX < Width && TestY < Height - 1 && !TestTile->IsFree)
+            {
+                TestX += dX;
+                TestY += dY;
+                TestTile = GetTile(GameState, TestX, TestY);
+            }
+            if(TestX >= 0 && TestY > 0 && TestX < Width && TestY < Height - 1)
+            {
+                // NOTE(Zyonji): found path
+                int PathLength = 1;
+                while(((TestTile->NextX == TestX && dY == 0) || 
+                       (TestTile->NextY == TestY && dX == 0)) && PathLength <= Stretch)
+                {
+                    int PathX = TestTile->NextX - dX;
+                    int PathY = TestTile->NextY - dY;
+                    while(PathX != X && PathY != Y && !IsTileFree(GameState, PathX, PathY))
+                    {
+                        PathX -= dX;
+                        PathY -= dY;
+                    }
+                    if(IsTileFree(GameState, PathX, PathY))
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        TestX = TestTile->NextX;
+                        TestY = TestTile->NextY;
+                        TestTile = GetTile(GameState, TestX, TestY);
+                    }
+                    ++PathLength;
+                }
+                
+                if(TestX != X && TestY != Y)
+                {
+                    int PathX = TestX;
+                    int PathY = TestY;
+                    game_tile *PathTile = GetTile(GameState, PathX, PathY);
+                    game_tile *OldTile = GetTile(GameState, PathTile->PreviousX, PathTile->PreviousY);
+                    PathX -= dX;
+                    PathY -= dY;
+                    PathTile->PreviousX = PathX;
+                    PathTile->PreviousY = PathY;
+                    PathTile = GetTile(GameState, PathX, PathY);
+                    while(PathX != X && PathY != Y)
+                    {
+                        PathTile->NextX = PathX + dX;
+                        PathTile->NextY = PathY + dY;
+                        PathX -= dX;
+                        PathY -= dY;
+                        PathTile->PreviousX = PathX;
+                        PathTile->PreviousY = PathY;
+                        PathTile->IsFree = true;
+                        --RemainingTiles;
+                        PathTile = GetTile(GameState, PathX, PathY);
+                    }
+                    int dX2 = 0;
+                    int dY2 = 0;
+                    if(PathX == X)
+                    {
+                        dY2 = OldTile->NextY - OldTile->Y;
+                    }
+                    if(PathY == Y)
+                    {
+                        dX2 = OldTile->NextX - OldTile->X;
+                    }
+                    PathTile->NextX = PathX + dX;
+                    PathTile->NextY = PathY + dY;
+                    PathX -= dX2;
+                    PathY -= dY2;
+                    PathTile->PreviousX = PathX;
+                    PathTile->PreviousY = PathY;
+                    PathTile->IsFree = true;
+                    --RemainingTiles;
+                    PathTile = GetTile(GameState, PathX, PathY);
+                    while(OldTile->X != X && OldTile->Y != Y)
+                    {
+                        PathTile->NextX = PathX + dX2;
+                        PathTile->NextY = PathY + dY2;
+                        PathX -= dX2;
+                        PathY -= dY2;
+                        PathTile->PreviousX = PathX;
+                        PathTile->PreviousY = PathY;
+                        PathTile->IsFree = true;
+                        PathTile = GetTile(GameState, PathX, PathY);
+                        OldTile->IsFree = false;
+                        OldTile = GetTile(GameState, OldTile->PreviousX, OldTile->PreviousY);
+                    }
+                    PathTile->NextX = PathX + dX2;
+                    PathTile->NextY = PathY + dY2;
+                    PathX += dX;
+                    PathY += dY;
+                    PathTile->PreviousX = PathX;
+                    PathTile->PreviousY = PathY;
+                    PathTile->IsFree = true;
+                    --RemainingTiles;
+                    PathTile = GetTile(GameState, PathX, PathY);
+                    while(PathX != TestX && PathY != TestY)
+                    {
+                        PathTile->NextX = PathX - dX;
+                        PathTile->NextY = PathY - dY;
+                        PathX += dX;
+                        PathY += dY;
+                        PathTile->PreviousX = PathX;
+                        PathTile->PreviousY = PathY;
+                        PathTile->IsFree = true;
+                        --RemainingTiles;
+                        PathTile = GetTile(GameState, PathX, PathY);
+                    }
+                    PathTile->NextX = PathX - dX;
+                    PathTile->NextY = PathY - dY;
+                    I = 0;
+                    break;
+                }
+            }
+            ++Orientation;
+        }
+        Random = AdvanceRandomNumber(Random);
     }
     
     win32_offscreen_buffer *Buffer = &GameState->Buffer;
@@ -192,59 +416,44 @@ ResetRoom(game_state *GameState)
 }
 
 internal void
-PlayerMoveUp(game_state *GameState)
+PlayerMoveFor(game_state *GameState, int RelativeX, int RelativeY)
 {
     int X = GameState->X;
     int Y = GameState->Y;
     
-    ++Y;
-    
-    GameState->X = X;
-    GameState->Y = Y;
-    
-    RedrawRoom(GameState);
-}
-
-internal void
-PlayerMoveDown(game_state *GameState)
-{
-    int X = GameState->X;
-    int Y = GameState->Y;
-    
-    --Y;
-    
-    GameState->X = X;
-    GameState->Y = Y;
-    
-    RedrawRoom(GameState);
-}
-
-internal void
-PlayerMoveLeft(game_state *GameState)
-{
-    int X = GameState->X;
-    int Y = GameState->Y;
-    
-    --X;
-    
-    GameState->X = X;
-    GameState->Y = Y;
-    
-    RedrawRoom(GameState);
-}
-
-internal void
-PlayerMoveRight(game_state *GameState)
-{
-    int X = GameState->X;
-    int Y = GameState->Y;
-    
-    ++X;
-    
-    GameState->X = X;
-    GameState->Y = Y;
-    
-    RedrawRoom(GameState);
+    if(IsTileFree(GameState, X + RelativeX, Y + RelativeY))
+    {
+        game_tile *Tile = GetTile(GameState, X, Y);
+        Tile->IsFree = false;
+        GameState->X += RelativeX;
+        GameState->Y += RelativeY;
+        RedrawRoom(GameState);
+    }
+    else if(!IsTileFree(GameState, X + 1, Y) &&
+            !IsTileFree(GameState, X - 1, Y) &&
+            !IsTileFree(GameState, X, Y + 1) &&
+            !IsTileFree(GameState, X, Y - 1))
+    {
+        int NumberOfFreeTiles = 0;
+        int NumberOfTiles = GameState->Room.Height * GameState->Room.Width;
+        game_tile *Tile = GameState->Room.Tiles;
+        for(int I = 0;
+            I < NumberOfTiles;
+            ++I)
+        {
+            ++Tile;
+            if(Tile->IsFree)
+            {
+                ++NumberOfFreeTiles;
+            }
+        }
+        if(NumberOfFreeTiles == 1)
+        {
+            ++GameState->RoomsCleared;
+            GameState->Seed = AdvanceRandomNumber(GameState->Seed + GameState->RoomsCleared);
+        }
+        ResetRoom(GameState);
+    }
 }
 
 LRESULT CALLBACK
@@ -273,35 +482,35 @@ Win32MainWindowCallback(HWND Window,
             {
                 if(VKCode == 'W')
                 {
-                    PlayerMoveUp(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 0, 1);
                 }
                 else if(VKCode == 'A')
                 {
-                    PlayerMoveLeft(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, -1, 0);
                 }
                 else if(VKCode == 'S')
                 {
-                    PlayerMoveDown(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 0, -1);
                 }
                 else if(VKCode == 'D')
                 {
-                    PlayerMoveRight(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 1, 0);
                 }
                 else if(VKCode == VK_UP)
                 {
-                    PlayerMoveUp(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 0 ,1);
                 }
                 else if(VKCode == VK_LEFT)
                 {
-                    PlayerMoveLeft(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, -1, 0);
                 }
                 else if(VKCode == VK_DOWN)
                 {
-                    PlayerMoveDown(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 0, -1);
                 }
                 else if(VKCode == VK_RIGHT)
                 {
-                    PlayerMoveRight(GlobalGameState);
+                    PlayerMoveFor(GlobalGameState, 1, 0);
                 }
                 
                 RedrawWindow(Window, 0, 0, RDW_INVALIDATE);
