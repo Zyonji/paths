@@ -29,8 +29,12 @@ struct win32_offscreen_buffer
     i32 Width;
     i32 Height;
     i32 Pitch;
-    i32 TileOffset;
     i32 BytesPerPixel;
+    
+    i32 TileOffset;
+    u32 FreeColor;
+    u32 CheckedColor;
+    u32 BorderColor;
 };
 
 struct game_tile
@@ -55,11 +59,18 @@ struct game_state
 {
     b32 Running;
     u32 Seed;
-    i32 RoomsCleared;
+    u32 RoomsCleared;
     i32 X;
     i32 Y;
     game_room Room;
     win32_offscreen_buffer Buffer;
+};
+
+struct game_save
+{
+    u32 OldSeed;
+    u32 RoomsCleared;
+    u32 Seed;
 };
 
 global_variable game_state *GlobalGameState;
@@ -71,6 +82,47 @@ AdvanceRandomNumber(u32 Number)
     u32 Subtraction = (Number & 7187) * 941083981;
     u32 Addition = (Number & 141650963) * 433024223;
     Result += 23 + Addition - Subtraction;
+    return(Result);
+}
+
+internal game_save
+LoadGame()
+{
+    game_save Save = {};
+    HANDLE FileHandle = CreateFileA("paths.save", GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    if(FileHandle != INVALID_HANDLE_VALUE)
+    {
+        LARGE_INTEGER FileSize;
+        if(GetFileSizeEx(FileHandle, &FileSize) && FileSize.QuadPart == sizeof(Save))
+        {
+            DWORD BytesRead;
+            ReadFile(FileHandle, &Save, sizeof(Save), &BytesRead, 0);
+        }
+        CloseHandle(FileHandle);
+    }
+    if(AdvanceRandomNumber(Save.OldSeed + Save.RoomsCleared) != Save.Seed)
+    {
+        Save = {0, 0, 420023};
+    }
+    return(Save);
+}
+
+internal b32
+SaveGame(u32 OldSeed, u32 RoomsCleared, u32 Seed)
+{
+    b32 Result = false;
+    game_save Save = {OldSeed, RoomsCleared, Seed};
+    HANDLE FileHandle = CreateFileA("paths.save", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+    if(FileHandle != INVALID_HANDLE_VALUE)
+    {
+        DWORD BytesWritten;
+        if(WriteFile(FileHandle, &Save, sizeof(Save), &BytesWritten, 0))
+        {
+            Result = (BytesWritten == sizeof(Save));
+        }
+        CloseHandle(FileHandle);
+        
+    }
     return(Result);
 }
 
@@ -118,7 +170,7 @@ RedrawRoom(game_state *GameState)
             game_tile *Tile = GetTile(GameState, TileX, TileY);
             if(SubX == 0 || SubY == 0)
             {
-                *Pixel++ = 0x00000000;
+                *Pixel++ = Buffer->BorderColor;
             }
             else if(TileX == GameState->X && TileY == GameState->Y)
             {
@@ -133,11 +185,11 @@ RedrawRoom(game_state *GameState)
             }
             else if(Tile->IsFree)
             {
-                *Pixel++ = 0x00FFFFFF;
+                *Pixel++ = Buffer->FreeColor;
             }
             else
             {
-                *Pixel++ = 0x000F0F0F;
+                *Pixel++ = Buffer->CheckedColor;
             }
             
             if(++SubX == Buffer->TileOffset)
@@ -155,11 +207,60 @@ RedrawRoom(game_state *GameState)
     }
 }
 
+internal u32
+ComputeColor(r32 Value, u32 Continuum)
+{
+    u32 Result;
+    r32 Red;
+    r32 Green;
+    r32 Blue;
+    u32 Spectrum = Continuum % 600;
+    if(Spectrum < 100)
+    {
+        Red = 1.0f;
+        Green = Spectrum / 100.0f;
+        Blue = 0.0f;
+    }
+    else if(Spectrum < 200)
+    {
+        Red = (Spectrum - 100) / 100.0f;
+        Green = 1.0f;
+        Blue = 0.0f;
+    }
+    else if(Spectrum < 300)
+    {
+        Red = 0.0f;
+        Green = 1.0f;
+        Blue = (Spectrum - 200) / 100.0f;
+    }
+    else if(Spectrum < 400)
+    {
+        Red = 0.0f;
+        Green = (Spectrum - 300) / 100.0f;
+        Blue = 1.0f;
+    }
+    else if(Spectrum < 500)
+    {
+        Red = (Spectrum - 400) / 100.0f;
+        Green = 0.0f;
+        Blue = 1.0f;
+    }
+    else
+    {
+        Red = 1.0f;
+        Green = 0.0f;
+        Blue = (Spectrum - 500) / 100.0f;
+    }
+    Result = ((u32)(Red * Value) << 16) + ((u32)(Green * Value) << 8) + ((u32)(Blue * Value) << 0);
+    return(Result);
+}
+
 internal void
 ResetRoom(game_state *GameState)
 {
-    int Height = 7;
-    int Width = 9;
+    r32 Factor = 1.0f + GameState->RoomsCleared;
+    int Height = (int)(4.5f + 96.0f * Factor / (Factor + 200.0f));
+    int Width = (int)(1.5f * Height);
     GameState->X = Width / 2;
     GameState->Y = 0;
     
@@ -405,6 +506,11 @@ ResetRoom(game_state *GameState)
     Buffer->TileOffset = TileOffset;
     Buffer->Memory = (void *)(Room->Tiles + Height * Width);
     
+    Buffer->FreeColor = 0x00FFFFFF;
+    r32 Value = 256.0f * Factor / (Factor + 255.0f);
+    Buffer->CheckedColor = ComputeColor(Value, GameState->RoomsCleared);
+    Buffer->BorderColor = ComputeColor(Value, GameState->RoomsCleared + GameState->RoomsCleared / 10);
+    
     Buffer->Info.bmiHeader.biSize = sizeof(Buffer->Info.bmiHeader);
     Buffer->Info.bmiHeader.biWidth = Buffer->Pitch / BytesPerPixel;
     Buffer->Info.bmiHeader.biHeight = Buffer->Height;
@@ -435,7 +541,7 @@ PlayerMoveFor(game_state *GameState, int RelativeX, int RelativeY)
             !IsTileFree(GameState, X, Y - 1))
     {
         int NumberOfFreeTiles = 0;
-        int NumberOfTiles = GameState->Room.Height * GameState->Room.Width;
+        int NumberOfTiles = (GameState->Room.Height -1) * GameState->Room.Width;
         game_tile *Tile = GameState->Room.Tiles;
         for(int I = 0;
             I < NumberOfTiles;
@@ -447,10 +553,12 @@ PlayerMoveFor(game_state *GameState, int RelativeX, int RelativeY)
                 ++NumberOfFreeTiles;
             }
         }
-        if(NumberOfFreeTiles == 1)
+        if(NumberOfFreeTiles == 0)
         {
             ++GameState->RoomsCleared;
+            u32 OldSeed = GameState->Seed;
             GameState->Seed = AdvanceRandomNumber(GameState->Seed + GameState->RoomsCleared);
+            SaveGame(OldSeed, GameState->RoomsCleared, GameState->Seed);
         }
         ResetRoom(GameState);
     }
@@ -557,11 +665,13 @@ WinMain(HINSTANCE Instance,
         LPSTR CommandLine,
         int ShowCode)
 {
-    void *Memory = VirtualAlloc(0, 1000000, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    game_save Save = LoadGame();
+    int MemorySize = sizeof(*GlobalGameState) + 15000 * sizeof(*GlobalGameState->Room.Tiles) + 601 * 901 * 4;
+    void *Memory = VirtualAlloc(0, MemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
     GlobalGameState = (game_state *)Memory;
     GlobalGameState->Running = true;
-    GlobalGameState->Seed = 420023;
-    GlobalGameState->RoomsCleared = 0;
+    GlobalGameState->Seed = Save.Seed;
+    GlobalGameState->RoomsCleared = Save.RoomsCleared;
     
     //game_state *test = GlobalGameState + 1;
     
