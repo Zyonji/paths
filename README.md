@@ -1,2 +1,2 @@
 # paths
-A simple puzzle game.
+A procedual generator for sovleable "step on every tile once" puzzles.
